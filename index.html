@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Spektra RTA</title>
+<title>AJIB RTA</title>
 <style>
 :root{--bg:#EEF0EC;--panel:#E1E6E0;--ink:#1B2A2F;--mute:#5B6B6D;--grid:#C3CBC5;--live:#0F6E7A;--peak:#B86E00;--ref:#6B4FBB;--line:#B5BFB8;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#13181B;--panel:#1D2428;--ink:#E4ECEA;--mute:#8FA0A3;--grid:#2B353A;--live:#5CC8E0;--peak:#F2B33D;--ref:#B79CFF;--line:#34424A;color-scheme:dark}}
@@ -33,7 +33,7 @@ button:disabled{opacity:.45;cursor:default}
 </head>
 <body>
 <header>
-  <h1>Spektra RTA</h1>
+  <h1>AJIB RTA</h1>
   <span id="status" role="status" aria-live="polite">Tekan Mulai untuk mengukur dari mikrofon.</span>
 </header>
 <div class="read">
@@ -47,7 +47,7 @@ button:disabled{opacity:.45;cursor:default}
   <button id="go" class="go">Mulai</button>
   <button id="frz" aria-pressed="false" disabled>Bekukan</button>
   <button id="sref" disabled>Simpan acuan</button>
-  <button id="cref" disabled>Hapus acuan</button>
+  <button id="cref" disabled>Hapus semua acuan</button>
   <label>Resolusi
     <select id="res"><option value="3" selected>1/3 oktaf</option><option value="6">1/6 oktaf</option><option value="12">1/12 oktaf</option><option value="24">1/24 oktaf</option></select></label>
   <label>Pembobotan
@@ -61,10 +61,14 @@ button:disabled{opacity:.45;cursor:default}
   <label>Mikrofon
     <select id="dev"><option value="">Bawaan</option></select></label>
   <label>Tampilan
-    <select id="mode"><option value="rta" selected>RTA</option><option value="sp">Spektogram</option><option value="tf">Transfer function</option></select></label>
+    <select id="mode"><option value="rta" selected>RTA</option><option value="sp">Spektogram</option><option value="tf">Transfer function</option><option value="ir">Impulse response</option><option value="mc">Magnitudo / Fase / Koherensi</option></select></label>
   <label>Delay (ms)
     <input id="dly" type="number" step="0.01" value="0" inputmode="decimal"></label>
   <button id="fdly" disabled>Cari delay</button>
+  <label class="chk"><input id="adl" type="checkbox"> Delay otomatis</label>
+  <label>Ambang koherensi
+    <select id="cth"><option value="0">Mati</option><option value="0.25">25%</option><option value="0.5" selected>50%</option><option value="0.75">75%</option></select></label>
+  <button id="exp">Ekspor CSV</button>
   <button id="rst">Reset statistik</button>
   <button id="pn" aria-pressed="false">Pink noise</button>
   <label>Volume noise
@@ -177,7 +181,7 @@ function findDelay(){
   fft(re,im,true);
   var best=0,bi=0;
   for(i=0;i<TM;i++){if(Math.abs(re[i])>best){best=Math.abs(re[i]);bi=i}}
-  tfTau=(bi<TM/2?bi:bi-TM)/sr;$('dly').value=(tfTau*1000).toFixed(2);
+  tfTau=(bi<TM/2?bi:bi-TM)/sr;$('dly').value=(tfTau*1000).toFixed(2);if(!$('adl').checked)msg('Delay ditemukan: '+fmt(tfTau*1000,2)+' ms');
 }
 function tfCompute(){
   if(!tfOn||!tfN)return;
@@ -212,7 +216,7 @@ function line(a,y,h,rng,col){
   g.lineWidth=2;g.strokeStyle=col;
   for(var i=1;i<bands.length;i++){
     if(rng===180&&Math.abs(a[i]-a[i-1])>180)continue;
-    g.globalAlpha=tfC[i]<0.5?0.18:1;
+    g.globalAlpha=tfC[i]<cth?0.18:1;
     g.beginPath();g.moveTo(X(bands[i-1].fc),seg(a,i-1,y,h,rng));g.lineTo(X(bands[i].fc),seg(a,i,y,h,rng));g.stroke();
   }
   g.globalAlpha=1;
@@ -241,7 +245,52 @@ function drawSpec(){
   g.restore();g.globalAlpha=0.5;vgrid(T,ph,false);g.globalAlpha=1;vgrid(T,0,true);
   g.textAlign='right';g.fillStyle=colors.mute;g.fillText('baru',L-6,T+6);
 }
-function draw(){var m=$('mode').value;if(m==='tf')drawTF();else if(m==='sp')drawSpec();else drawRTA()}
+function drawIR(){
+  g.clearRect(0,0,cw,ch);g.font='11px system-ui,sans-serif';g.textBaseline='middle';
+  var ph=ch-T-B,pw=cw-L-R,t0=-10,t1=50,i;
+  if(!tfOn||!tfN){g.fillStyle=colors.mute;g.textAlign='center';g.fillText(tfOn?'Menunggu data...':'Butuh input stereo: kanal 1 = referensi, kanal 2 = pengukuran.',cw/2,T+ph/2);return}
+  var re=new Float64Array(TM),im=new Float64Array(TM);
+  for(i=0;i<=TM/2;i++){var d=Sxx[i]+1e-20,a=Sxr[i]/d,b=Sxi[i]/d;re[i]=a;im[i]=b;if(i>0&&i<TM/2){re[TM-i]=a;im[TM-i]=-b}}
+  fft(re,im,true);
+  var n=Math.round((t1-t0)/1000*sr),s0=Math.round(t0/1000*sr),pk=0,pi=0,v=new Float32Array(n);
+  for(i=0;i<n;i++){v[i]=re[((s0+i)%TM+TM)%TM];if(Math.abs(v[i])>pk){pk=Math.abs(v[i]);pi=i}}
+  g.lineWidth=1;g.textAlign='center';
+  for(var t=t0;t<=t1;t+=10){var x=Math.round(L+(t-t0)/(t1-t0)*pw)+0.5;g.strokeStyle=colors.grid;g.beginPath();g.moveTo(x,T);g.lineTo(x,T+ph);g.stroke();g.fillStyle=colors.mute;g.fillText(t+' ms',x,T+ph+13)}
+  var my=T+ph/2;g.strokeStyle=colors.grid;g.beginPath();g.moveTo(L,my);g.lineTo(L+pw,my);g.stroke();
+  g.save();g.beginPath();g.rect(L,T,pw,ph);g.clip();
+  g.strokeStyle=colors.live;g.lineWidth=2;g.beginPath();
+  for(i=0;i<n;i++){var px2=L+i/(n-1)*pw,py2=my-v[i]/(pk||1)*ph/2*0.95;if(i)g.lineTo(px2,py2);else g.moveTo(px2,py2)}
+  g.stroke();g.restore();
+  var lag=(s0+pi)/sr*1000;
+  g.fillStyle=colors.ink;g.textAlign='left';g.fillText('Puncak '+fmt(lag,2)+' ms \u00b7 jarak '+fmt(lag/1000*343,1)+' m',L+6,T+8);
+}
+function exportCSV(){
+  if(!avg){msg('Belum ada data. Tekan Mulai dulu.');return}
+  var tf=$('mode').value==='tf'&&tfM&&tfM.length===bands.length,i,rows=[tf?'frekuensi_hz,magnitudo_db,fase_derajat,koherensi':'frekuensi_hz,level_db'];
+  for(i=0;i<bands.length;i++)rows.push(tf?[bands[i].fc.toFixed(1),tfM[i].toFixed(2),tfP[i].toFixed(1),tfC[i].toFixed(3)].join(','):bands[i].fc.toFixed(1)+','+(avg[i]+offset).toFixed(2));
+  var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
+  a.download='ajib-rta-'+Date.now()+'.csv';document.body.appendChild(a);a.click();a.remove();msg('CSV diekspor.');
+}
+function ptitle(t,y){g.fillStyle=colors.ink;g.textAlign='left';g.fillText(t,L+6,y+9)}
+function cgrid(y,h){
+  g.lineWidth=1;g.textAlign='right';
+  for(var v=0;v<=1.001;v+=0.25){var yy=Math.round(y+h-v*h)+0.5;g.strokeStyle=colors.grid;g.beginPath();g.moveTo(L,yy);g.lineTo(cw-R,yy);g.stroke();g.fillStyle=colors.mute;g.fillText(Math.round(v*100)+'%',L-6,yy)}
+}
+function cline(y,h){
+  g.lineWidth=2;g.strokeStyle=colors.ref;g.beginPath();
+  for(var i=0;i<bands.length;i++){var cx2=X(bands[i].fc),cy2=y+h-Math.max(0,Math.min(1,tfC[i]))*h;if(i)g.lineTo(cx2,cy2);else g.moveTo(cx2,cy2)}
+  g.stroke();
+  if(cth>0){var ty=y+h-cth*h;g.strokeStyle=colors.mute;g.lineWidth=1;g.setLineDash([4,4]);g.beginPath();g.moveTo(L,ty);g.lineTo(cw-R,ty);g.stroke();g.setLineDash([])}
+}
+function drawMC(){
+  g.clearRect(0,0,cw,ch);g.font='11px system-ui,sans-serif';g.textBaseline='middle';
+  var ph=ch-T-B,gap=22,hh=Math.round((ph-gap*2)*0.37),h3=ph-gap*2-hh*2,y1=T,y2=y1+hh+gap,y3=y2+hh+gap;
+  hgrid(y1,hh,24,6,'');vgrid(y1,hh,true);hgrid(y2,hh,180,90,'');vgrid(y2,hh,true);cgrid(y3,h3);vgrid(y3,h3,true);
+  ptitle('Magnitudo (dB)',y1);ptitle('Fase (derajat)',y2);ptitle('Koherensi',y3);
+  if(!tfOn||!tfM||tfM.length!==bands.length){g.fillStyle=colors.mute;g.textAlign='center';g.fillText(tfOn?'Menunggu data...':'Butuh input stereo: kanal 1 = referensi, kanal 2 = pengukuran.',cw/2,y1+hh/2);return}
+  line(tfM,y1,hh,24,colors.live);line(tfP,y2,hh,180,colors.peak);cline(y3,h3);
+}
+function draw(){var m=$('mode').value;if(m==='tf')drawTF();else if(m==='mc')drawMC();else if(m==='ir')drawIR();else if(m==='sp')drawSpec();else drawRTA()}
 function drawRTA(){
   var pw=cw-L-R,ph=ch-T-B,i;
   g.clearRect(0,0,cw,ch);
@@ -283,9 +332,9 @@ function drawRTA(){
       if(bars){for(i=0;i<n;i++){var hy=Y(hold[i]);g.beginPath();g.moveTo(X(bands[i].lo)+1,hy);g.lineTo(X(bands[i].hi)-1,hy);g.stroke()}}
       else{g.lineWidth=1.5;g.beginPath();for(i=0;i<n;i++){var hx=X(bands[i].fc),hy2=Y(hold[i]);if(i)g.lineTo(hx,hy2);else g.moveTo(hx,hy2)}g.stroke()}
     }
-    if(ref&&ref.length===n){
-      g.strokeStyle=colors.ref;g.lineWidth=2;g.beginPath();
-      for(i=0;i<n;i++){var rx=X(bands[i].fc),ry=Y(ref[i]);if(i)g.lineTo(rx,ry);else g.moveTo(rx,ry)}
+    if(ref)for(var q=0;q<ref.length;q++){var rf=ref[q];if(rf.length!==n)continue;g.fillStyle=[colors.ref,'#D2487E','#2E9E6B'][q];g.textAlign='right';g.fillText('Acuan '+(q+1),cw-R-6,T+10+q*14);
+      g.strokeStyle=[colors.ref,'#D2487E','#2E9E6B'][q];g.lineWidth=2;g.beginPath();
+      for(i=0;i<n;i++){var rx=X(bands[i].fc),ry=Y(rf[i]);if(i)g.lineTo(rx,ry);else g.moveTo(rx,ry)}
       g.stroke();
     }
   }
@@ -311,8 +360,9 @@ function readouts(){
 
 function frame(t){
   if(run){
-    if(!frozen){measure();stats();var md=$('mode').value;if(md==='sp')push();if(md==='tf')tfCompute()}
+    if(!frozen){measure();stats();var md=$('mode').value;if(md==='sp')push();if(md==='tf'||md==='mc')tfCompute()}
     if(t-lastRead>100){readouts();lastRead=t}
+    if(tfOn&&tfN&&$('adl').checked&&t-lastAd>1000){findDelay();lastAd=t}
   }
   draw();
   requestAnimationFrame(frame);
@@ -374,8 +424,8 @@ function stop(){
 
 $('go').onclick=function(){run?stop():start()};
 $('frz').onclick=function(){frozen=!frozen;this.setAttribute('aria-pressed',frozen);msg(frozen?'Grafik dibekukan.':'Mengukur.')};
-$('sref').onclick=function(){if(avg){ref=Float32Array.from(avg);$('cref').disabled=false;msg('Acuan disimpan (garis ungu).')}};
-$('cref').onclick=function(){ref=null;this.disabled=true;msg('Acuan dihapus.')};
+$('sref').onclick=function(){if(!avg)return;if(!ref)ref=[];if(ref.length>=3){msg('Maksimal 3 acuan. Tekan Hapus semua acuan dulu.');return}ref.push(Float32Array.from(avg));$('cref').disabled=false;msg('Acuan '+ref.length+' disimpan.')};
+$('cref').onclick=function(){ref=null;this.disabled=true;msg('Semua acuan dihapus.')};
 $('res').onchange=function(){N=+this.value;buildBands()};
 $('wt').onchange=function(){wt=this.value;buildBinWeights();buildBands()};
 $('avg').onchange=function(){alpha=+this.value};
@@ -415,6 +465,10 @@ $('pn').onclick=function(){
   msg(on?'Pink noise menyala. Naikkan volume pelan-pelan.':'Pink noise mati.');
 };
 $('pv').oninput=function(){if(ngain&&nsrc)ngain.gain.setTargetAtTime(nvol(),nctx.currentTime,0.05)};
+var lastAd=0,cth=0.5;
+$('mode').onchange=function(){wrap.style.minHeight=this.value==='mc'?'720px':'';resize()};
+$('cth').onchange=function(){cth=+this.value};
+$('exp').onclick=exportCSV;
 $('rst').onclick=resetStats;
 $('fdly').onclick=findDelay;
 $('dly').oninput=function(){tfTau=(parseFloat(this.value)||0)/1000};
